@@ -7,7 +7,7 @@
 
 import unittest2
 
-include diff_match_patch
+include diffmatchpatch
 # {.experimental: "codeReordering".}
 
 suite "Diff basic functions":
@@ -44,12 +44,12 @@ suite "Half Match":
       halfMatch("121231234123451234123121", "a1234123451234z").get ==
         ("12123", "123121", "a", "z", "1234123451234")
       halfMatch("x-=-=-=-=-=-=-=-=-=-=-=-=", "xx-=-=-=-=-=-=-=").get ==
-        ("", "-=-=-=-=-=", "x", "", "x-=-=-=-=-=-=-=")  
+        ("", "-=-=-=-=-=", "x", "", "x-=-=-=-=-=-=-=")
       # ("x-=-=-=", "-=-=", "xx", "", "-=-=-=-=-=-=-=") <- FAILED RESULT
       halfMatch("-=-=-=-=-=-=-=-=-=-=-=-=y", "-=-=-=-=-=-=-=yy").get ==
         ("-=-=-=-=-=", "", "", "y", "-=-=-=-=-=-=-=y")
       # ("-=-=-=", "-=-=y", "", "yy", "-=-=-=-=-=-=-=") <- FAILED RESULT
-  
+
   test "Non-optimal halfmatch":
     # Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
     check halfMatch("qHilloHelloHew", "xHelloHeHulloy").get ==
@@ -57,24 +57,24 @@ suite "Half Match":
 
   test "Optimal no halfmatch":
     check halfMatch("qHilloHelloHew", "xHelloHeHulloy").isNone
-    
 
 suite "Lines to Chars":
   test "Basic Operations":
     check:
-      linesToChars("alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n") == ("\x01\x02\x01", "\x02\x01\x02", @["", "alpha\n", "beta\n"])
-      linesToChars("", "alpha\r\nbeta\r\n\r\n\r\n") == ("", "\x01\x02\x03\x03", @["", "alpha\r\n", "beta\r\n", "\r\n"])
+      linesToChars("alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n") ==
+        ("\x01\x02\x01", "\x02\x01\x02", @["", "alpha\n", "beta\n"])
+      linesToChars("", "alpha\r\nbeta\r\n\r\n\r\n") ==
+        ("", "\x01\x02\x03\x03", @["", "alpha\r\n", "beta\r\n", "\r\n"])
       linesToChars("a", "b") == ("\x01", "\x02", @["", "a", "b"])
-  
 
   # More than 256 to reveal any 8-bit limitations
   test "8-bit limitation":
     let n = 300
     var lineList: seq[string] = @[]
-    var charList: seq[char] = @[]
-    for i in 1..n:
+    var charList: seq[Rune] = @[]
+    for i in 1 .. n:
       lineList.add($i & "\n")
-      charList.add(chr(i))
+      charList.add(Rune(i))
     check lineList.len == n
     let lines = lineList.join("")
     let chars = charList.join("")
@@ -83,20 +83,18 @@ suite "Lines to Chars":
     var diffs: seq[StringDiff] = @[(DiffOp.Delete, chars)]
     charsToLines(diffs, lineList)
     check diffs == @[(DiffOp.Delete, lines)]
-  
 
   # More than 1,114,112 to verify any 17 * 16-bit limitation.
   test "16-bit limitation":
     var lineList: seq[string] = @[]
-    for i in 1..1115000:
+    for i in 1 .. 1115000:
       lineList.add($i & "\n")
 
     let chars = lineList.join("")
     let results = linesToChars(chars, "")
     var diffs = @[(DiffOp.Insert, results[0])]
     charsToLines(diffs, results[2])
-    check chars == diffs[0][1]
-  
+    check chars == diffs[0].text
 
 suite "Cleanup Merge":
   test "No change case":
@@ -120,17 +118,26 @@ suite "Cleanup Merge":
     check diffs == @[(Insert, "abc")]
 
   test "Merge interweave":
-    var diffs = @[(Delete, "a"), (Insert, "b"), (Delete, "c"), (Insert, "d"), (Equal, "e"), (Equal, "f")]
+    var diffs =
+      @[
+        (Delete, "a"),
+        (Insert, "b"),
+        (Delete, "c"),
+        (Insert, "d"),
+        (Equal, "e"),
+        (Equal, "f"),
+      ]
     cleanupMerge diffs
     check diffs == @[(Delete, "ac"), (Insert, "bd"), (Equal, "ef")]
 
   test "Prefix and suffix detection":
     var diffs = @[(Delete, "a"), (Insert, "abc"), (Delete, "dc")]
     cleanupMerge diffs
-    check diffs == @[(Equal, "a"), (Delete, "d"), (Insert, "b"), (Equal, "c")]    
+    check diffs == @[(Equal, "a"), (Delete, "d"), (Insert, "b"), (Equal, "c")]
 
   test "Prefix and suffix detection with equalities":
-    var diffs = @[(Equal, "x"), (Delete, "a"), (Insert, "abc"), (Delete, "dc"), (Equal, "y")]
+    var diffs =
+      @[(Equal, "x"), (Delete, "a"), (Insert, "abc"), (Delete, "dc"), (Equal, "y")]
     cleanupMerge diffs
     check diffs == @[(Equal, "xa"), (Delete, "d"), (Insert, "b"), (Equal, "cy")]
 
@@ -145,12 +152,14 @@ suite "Cleanup Merge":
     check diffs == @[(Equal, "ca"), (Insert, "ba")]
 
   test "Slide edit left recursive":
-    var diffs = @[(Equal, "a"), (Delete, "b"), (Equal, "c"), (Delete, "ac"), (Equal, "x")]
+    var diffs =
+      @[(Equal, "a"), (Delete, "b"), (Equal, "c"), (Delete, "ac"), (Equal, "x")]
     cleanupMerge diffs
     check diffs == @[(Delete, "abc"), (Equal, "acx")]
 
   test "Slide edit right recursive":
-    var diffs = @[(Equal, "x"), (Delete, "ca"), (Equal, "c"), (Delete, "b"), (Equal, "a")]
+    var diffs =
+      @[(Equal, "x"), (Delete, "ca"), (Equal, "c"), (Delete, "b"), (Equal, "a")]
     cleanupMerge diffs
     check diffs == @[(Equal, "xca"), (Delete, "cba")]
 

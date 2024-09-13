@@ -58,7 +58,7 @@ proc linesToChars(
 
   proc linesToCharsMunge(text: string): string =
     var
-      chars: seq[char] = @[]
+      chars: seq[chr] = @[]
       lineStart = 0
 
     for i, c in text:
@@ -225,11 +225,11 @@ proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
 
   # Intentionally ignore the first and last element (don't need checking).
   while thisPointer < diffs.len - 1:
-    if diffs[thisPointer - 1][0] == Equal and diffs[thisPointer + 1][0] == Equal:
+    if diffs[thisPointer - 1].op == Equal and diffs[thisPointer + 1].op == Equal:
       # This is a single edit surrounded by equalities.
-      equality1 = diffs[thisPointer - 1][1]
-      edit = diffs[thisPointer][1]
-      equality2 = diffs[thisPointer + 1][1]
+      equality1 = diffs[thisPointer - 1].text
+      edit = diffs[thisPointer].text
+      equality2 = diffs[thisPointer + 1].text
 
       # First, shift the edit as far left as possible.
       let commonOffset = commonSuffix(equality1, edit)
@@ -259,11 +259,11 @@ proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
           bestEdit = edit
           bestEquality2 = equality2
 
-      if diffs[thisPointer - 1][1] != bestEquality1:
+      if diffs[thisPointer - 1].text != bestEquality1:
         # We have an improvement, save it back to the diff.
         if bestEquality1.len > 0:
           # diffs[thisPointer - 1] = (Equal, bestEquality1)
-          diffs[thisPointer - 1][1] = bestEquality1
+          diffs[thisPointer - 1].text = bestEquality1
         else:
           diffs.delete(thisPointer - 1)
           dec thisPointer
@@ -271,7 +271,7 @@ proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
         diffs[thisPointer] = (diffs[thisPointer][0], bestEdit)
         if bestEquality2.len > 0:
           # diffs[thisPointer + 1] = (Equal, bestEquality2)
-          diffs[thisPointer + 1][1] = bestEquality2
+          diffs[thisPointer + 1].text = bestEquality2
         else:
           diffs.delete(thisPointer + 1)
           dec thisPointer
@@ -292,16 +292,16 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
     newOps: seq[StringDiff] = @[]
 
   while thisPointer < diffs.len:
-    case diffs[thisPointer][0]
+    case diffs[thisPointer].op
     of Insert:
       inc countInsert
-      textInsert &= diffs[thisPointer][1]
+      textInsert &= diffs[thisPointer].text
       # Added manually:
       inc thisPointer
       break
     of Delete:
       inc countDelete
-      textDelete &= diffs[thisPointer][1]
+      textDelete &= diffs[thisPointer].text
       # Added manually:
       inc thisPointer
       break
@@ -313,8 +313,8 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
           commonLength = commonPrefix(textInsert, textDelete)
           if commonLength != 0:
             let x = thisPointer - countDelete - countInsert - 1
-            if x >= 0 and diffs[x][0] == Equal:
-              diffs[x] = (Equal, diffs[x][1] & textInsert[0 ..< commonLength])
+            if x >= 0 and diffs[x].op == Equal:
+              diffs[x] = (Equal, diffs[x].text & textInsert[0 ..< commonLength])
             else:
               diffs.insert((Equal, textInsert[0 ..< commonLength]), 0)
               inc thisPointer
@@ -345,10 +345,10 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
           diffs.insert(op, thisPointer)
           inc thisPointer
         inc thisPointer
-      elif thisPointer != 0 and diffs[thisPointer - 1][0] == Equal:
+      elif thisPointer != 0 and diffs[thisPointer - 1].op == Equal:
         # Merge this equality with the previous one.
         diffs[thisPointer - 1] =
-          (Equal, diffs[thisPointer - 1][1] & diffs[thisPointer][1])
+          (Equal, diffs[thisPointer - 1].text & diffs[thisPointer][1])
         diffs.delete(thisPointer)
       else:
         inc thisPointer
@@ -368,18 +368,18 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
   thisPointer = 1
   # Intentionally ignore the first and last element (don't need checking).
   while thisPointer < diffs.len - 1:
-    if diffs[thisPointer - 1][0] == Equal and diffs[thisPointer + 1][0] == Equal:
+    if diffs[thisPointer - 1].op == Equal and diffs[thisPointer + 1].op == Equal:
       # This is a single edit surrounded by equalities.
       if diffs[thisPointer][1].endsWith(diffs[thisPointer - 1][1]):
         # Shift the edit over the previous equality.
         diffs[thisPointer] = (
           diffs[thisPointer][0],
-          diffs[thisPointer - 1][1] &
+          diffs[thisPointer - 1].text &
             diffs[thisPointer][1][0 ..^ (diffs[thisPointer - 1][1].len + 1)],
         )
         diffs[thisPointer + 1] = (
           diffs[thisPointer + 1][0],
-          diffs[thisPointer - 1][1] & diffs[thisPointer + 1][1],
+          diffs[thisPointer - 1].text & diffs[thisPointer + 1][1],
         )
         diffs.delete(thisPointer - 1)
         changes = true
@@ -387,7 +387,7 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
         # Shift the edit over the next equality.
         diffs[thisPointer - 1] = (
           diffs[thisPointer - 1][0],
-          diffs[thisPointer - 1][1] & diffs[thisPointer + 1][1],
+          diffs[thisPointer - 1].text & diffs[thisPointer + 1][1],
         )
         diffs[thisPointer] = (
           diffs[thisPointer][0],
@@ -415,14 +415,14 @@ proc cleanupEfficiency(diffs: var seq[StringDiff], params: DMPConfig) =
     post_del = false # Is there a deletion operation after the last equality.
 
   while thisPointer < diffs.len:
-    case diffs[thisPointer][0]
+    case diffs[thisPointer].op
     of Equal: # Equality found.
       if diffs[thisPointer][1].len < params.diffEditCost and (post_ins or post_del):
         # Candidate found.
         equalities.add(thisPointer)
         pre_ins = post_ins
         pre_del = post_del
-        lastEquality = diffs[thisPointer][1]
+        lastEquality = diffs[thisPointer].text
       else:
         # Not a candidate, and can never become one.
         equalities.setLen(0)
@@ -431,7 +431,7 @@ proc cleanupEfficiency(diffs: var seq[StringDiff], params: DMPConfig) =
       post_ins = false
       post_del = false
     else: # An insertion or deletion.
-      if diffs[thisPointer][0] == Delete:
+      if diffs[thisPointer].op == Delete:
         post_del = true
       else:
         post_ins = true
@@ -517,15 +517,15 @@ proc cleanupSemantic(diffs: var seq[StringDiff]) =
     lengthDeletions2 = 0
 
   while thisPointer < diffs.len:
-    if diffs[thisPointer][0] == Equal:
+    if diffs[thisPointer].op == Equal:
       equalities.add(thisPointer)
       lengthInsertions1 = lengthInsertions2
       lengthDeletions1 = lengthDeletions2
       lengthInsertions2 = 0
       lengthDeletions2 = 0
-      lastEquality = diffs[thisPointer][1]
+      lastEquality = diffs[thisPointer].text
     else:
-      if diffs[thisPointer][0] == Insert:
+      if diffs[thisPointer].op == Insert:
         lengthInsertions2 += diffs[thisPointer][1].len
       else:
         lengthDeletions2 += diffs[thisPointer][1].len
@@ -561,10 +561,10 @@ proc cleanupSemantic(diffs: var seq[StringDiff]) =
   thisPointer = 1
   # while thisPointer < diffs.len - 1:
   while thisPointer < diffs.len:
-    if diffs[thisPointer - 1][0] == Delete and diffs[thisPointer + 1][0] == Insert:
+    if diffs[thisPointer - 1].op == Delete and diffs[thisPointer + 1].op == Insert:
       let
-        deletion = diffs[thisPointer - 1][1]
-        insertion = diffs[thisPointer + 1][1]
+        deletion = diffs[thisPointer - 1].text
+        insertion = diffs[thisPointer + 1].text
         overlap_length1 = commonOverlap(deletion, insertion)
         overlap_length2 = commonOverlap(insertion, deletion)
 
@@ -572,8 +572,8 @@ proc cleanupSemantic(diffs: var seq[StringDiff]) =
         if overlap_length1 >= deletion.len div 2 or
             overlap_length1 >= insertion.len div 2:
           diffs.insert((Equal, insertion[0 ..< overlap_length1]), thisPointer)
-          diffs[thisPointer - 1][1] = deletion[0 ..< deletion.len - overlap_length1]
-          diffs[thisPointer + 1][1] = insertion[overlap_length1 ..^ 1]
+          diffs[thisPointer - 1].text = deletion[0 ..< deletion.len - overlap_length1]
+          diffs[thisPointer + 1].text = insertion[overlap_length1 ..^ 1]
           inc thisPointer
       else:
         if overlap_length2 >= deletion.len div 2 or
@@ -609,13 +609,13 @@ proc lineMode(
   var textDelete = ""
   var textInsert = ""
   while thisPointer < diffs.len:
-    case diffs[thisPointer][0]
+    case diffs[thisPointer].op
     of Insert:
       inc countInsert
-      textInsert &= diffs[thisPointer][1]
+      textInsert &= diffs[thisPointer].text
     of Delete:
       inc countDelete
-      textDelete &= diffs[thisPointer][1]
+      textDelete &= diffs[thisPointer].text
     of Equal:
       # Upon reaching an equality, check for prior redundancies.
       if countDelete >= 1 and countInsert >= 1:
@@ -913,7 +913,7 @@ proc makeDiffs*(
     else:
       deadline = epochTime() + params.diffTimeout
 
-  if text1 == nil or text2 == nil:
+  if text1 == nil or text2 == nil: # TODO: refurbish
     raise newException(ValueError, "Null inputs. (makeDiffs)")
 
   if text1 == text2:
@@ -1258,7 +1258,7 @@ proc addPatchPadding(
   # Add some padding on start of first diff.
   var patch = patches[0]
   var diffs = patch.diffs
-  if diffs.len == 0 or diffs[0][0] != Equal:
+  if diffs.len == 0 or diffs[0].op != Equal:
     # Add nullPadding equality.
     diffs.insert((Equal, nullPadding), 0)
     patch.start1 -= paddingLength # Should be 0.
@@ -1277,7 +1277,7 @@ proc addPatchPadding(
   # Add some padding on end of last diff.
   patch = patches[^1]
   diffs = patch.diffs
-  if diffs.len == 0 or diffs[^1][0] != Equal:
+  if diffs.len == 0 or diffs[^1].op != Equal:
     # Add nullPadding equality.
     diffs.add((Equal, nullPadding))
     patch.length1 += paddingLength
@@ -1285,7 +1285,7 @@ proc addPatchPadding(
   elif paddingLength > diffs[^1][1].len:
     # Grow last equality.
     let extraLength = paddingLength - diffs[^1][1].len
-    diffs[^1] = (diffs[^1][0], diffs[^1][1] & nullPadding[0 ..< extraLength])
+    diffs[^1] = (diffs[^1][0], diffs[^1].text & nullPadding[0 ..< extraLength])
     patch.length1 += extraLength
     patch.length2 += extraLength
 
@@ -1327,7 +1327,7 @@ proc splitMax(patches: var seq[Patch], params: DMPConfig) =
           patch.diffs.add(bigpatch.diffs[0])
           bigpatch.diffs.delete(0)
           empty = false
-        elif op == Delete and patch.diffs.len == 1 and patch.diffs[0][0] == Equal and
+        elif op == Delete and patch.diffs.len == 1 and patch.diffs[0].op == Equal and
             text.len > 2 * patchSize:
           # This is a large deletion.  Let it pass in one chunk.
           patch.length1 += text.len
@@ -1365,8 +1365,8 @@ proc splitMax(patches: var seq[Patch], params: DMPConfig) =
       if postcontext.len != 0:
         patch.length1 += postcontext.len
         patch.length2 += postcontext.len
-        if patch.diffs.len != 0 and patch.diffs[^1][0] == Equal:
-          patch.diffs[^1] = (Equal, patch.diffs[^1][1] & postcontext)
+        if patch.diffs.len != 0 and patch.diffs[^1].op == Equal:
+          patch.diffs[^1] = (Equal, patch.diffs[^1].text & postcontext)
         else:
           patch.diffs.add((Equal, postcontext))
 
