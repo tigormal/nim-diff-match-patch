@@ -3,7 +3,9 @@ import unicode
 
 # {.experimental: "codeReordering".}
 
-const NotFound* = -1
+const
+  NotFound* = -1
+  UnicodeMaxCode = 0x10FFFF
 
 type
   DiffOp* = enum
@@ -49,6 +51,7 @@ proc makeDiffs*(
   params: DMPConfig = defaultParams,
 ): seq[StringDiff]
 
+# CHECKED OK
 proc linesToChars(
     text1, text2: string
 ): tuple[chars1, chars2: string, lineArray: seq[string]] =
@@ -86,12 +89,13 @@ proc linesToChars(
     return chars
 
   let
-    chars1 = $linesToCharsMunge(text1, 40000) # maxLines values are temporary
-    chars2 = $linesToCharsMunge(text2, 65535)
+    chars1 = $linesToCharsMunge(text1, UnicodeMaxCode div 3 * 2)
+      # NOTE: Python uses 666_666
+    chars2 = $linesToCharsMunge(text2, UnicodeMaxCode)
 
   return (chars1, chars2, lineArray)
 
-# CHECKED NOT TESTED
+# CHECKED OK
 proc charsToLines(diffs: var seq[StringDiff], lineArray: seq[string]) =
   for diff in diffs.mitems:
     var text = ""
