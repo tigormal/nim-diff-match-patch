@@ -56,41 +56,51 @@ proc linesToChars(
     lineArray: seq[string] = @[""]
     lineHash: Table[string, int] = initTable[string, int]()
 
-  proc linesToCharsMunge(text: string): string =
+  proc linesToCharsMunge(text: string, maxLines: int): seq[Rune] =
     var
-      chars: seq[chr] = @[]
+      chars: seq[Rune] = @[]
       lineStart = 0
+      lineEnd = NotFound
+      line: string
 
-    for i, c in text:
-      if c == '\n':
-        let line = text[lineStart .. i]
-        if line notin lineHash:
-          lineArray.add(line)
-          lineHash[line] = lineArray.high
-        chars.add(chr(lineHash[line]))
-        lineStart = i + 1
+    while lineEnd < text.len - 1:
+      lineEnd = text.find('\n', lineStart)
+      if lineEnd == NotFound:
+        lineEnd = text.len - 1
 
-    if lineStart < text.len:
-      let line = text[lineStart ..^ 1]
-      if line notin lineHash:
+      line = text[lineStart .. lineEnd]
+
+      if lineHash.hasKey(line):
+        chars.add(Rune(lineHash[line]))
+      else:
+        if lineArray.len == maxLines:
+          # TODO: Find Rune() limitations to bail out as in other languages. Or remove the limitation.
+          line = text[lineStart .. ^1]
+          lineEnd = text.len
         lineArray.add(line)
-        lineHash[line] = lineArray.high
-      chars.add(chr(lineHash[line]))
+        lineHash[line] = lineArray.len - 1
+        chars.add(Rune(lineArray.len - 1))
 
-    return chars.join("")
+      lineStart = lineEnd + 1
+
+    return chars
 
   let
-    chars1 = linesToCharsMunge(text1)
-    chars2 = linesToCharsMunge(text2)
+    chars1 = $linesToCharsMunge(text1, 40000) # maxLines values are temporary
+    chars2 = $linesToCharsMunge(text2, 65535)
 
   return (chars1, chars2, lineArray)
 
+# CHECKED NOT TESTED
 proc charsToLines(diffs: var seq[StringDiff], lineArray: seq[string]) =
-  for i in 0 ..< diffs.len:
-    var text: seq[string] = @[]
-    for c in diffs[i][1]:
-      text.add(lineArray[ord(c)])
-    diffs[i] = (diffs[i][0], text.join(""))
+  for diff in diffs.mitems:
+    var text = ""
+    let runes = diff.text.toRunes
+    for r in runes:
+      let index = r.int
+      if index >= 0 and index < lineArray.len:
+        text.add(lineArray[index])
+    diff.text = text
 
 # CHECKED OK
 proc commonPrefix(text1, text2: string): int =

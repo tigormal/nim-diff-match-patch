@@ -78,7 +78,7 @@ suite "Lines to Chars":
     check lineList.len == n
     let lines = lineList.join("")
     let chars = charList.join("")
-    check chars.len == n
+    check chars.runeLen == n # TODO: check if runeLen should be used in functions
     lineList.insert("", 0)
     var diffs: seq[StringDiff] = @[(DiffOp.Delete, chars)]
     charsToLines(diffs, lineList)
@@ -94,7 +94,7 @@ suite "Lines to Chars":
     let results = linesToChars(chars, "")
     var diffs = @[(DiffOp.Insert, results[0])]
     charsToLines(diffs, results[2])
-    check chars == diffs[0].text
+    check chars == diffs[0][1]
 
 suite "Cleanup Merge":
   test "No change case":
