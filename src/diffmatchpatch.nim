@@ -14,6 +14,7 @@ type
     Equal
 
   StringDiff = tuple[op: DiffOp, text: string]
+  HalfMatch = tuple[text1A, text1B, text2A, text2B, midCommon: string]
 
   DMPConfig* = ref object
     diffTimeout: float
@@ -769,24 +770,20 @@ proc bisect(
 # CHECKED OK
 proc halfMatch(
     text1, text2: string, params: DMPConfig = defaultParams
-): Option[tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string]] =
+): Option[HalfMatch] =
   if params.diffTimeout <= 0:
-    return none(tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string])
+    return none(HalfMatch)
 
   let
     longtext = if text1.len > text2.len: text1 else: text2
     shorttext = if text1.len > text2.len: text2 else: text1
 
   if longtext.len < 4 or shorttext.len * 2 < longtext.len:
-    return none(tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string])
+    return none(HalfMatch)
 
   # CHECKED OK
-  proc halfMatchI(
-      longtext, shorttext: string, i: int
-  ): Option[tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string]] =
-    let
-      seed = longtext[i ..< i + longtext.len div 4]
-      # j = shorttext.find(seed)
+  proc halfMatchI(longtext, shorttext: string, i: int): Option[HalfMatch] =
+    let seed = longtext[i ..< i + longtext.len div 4]
     var
       j = NotFound
       bestCommon = ""
@@ -797,6 +794,8 @@ proc halfMatch(
     proc run(): int =
       j = shorttext.find(seed, j + 1)
       j
+
+    result = none(HalfMatch)
 
     while run() != NotFound:
       let
@@ -810,45 +809,25 @@ proc halfMatch(
         bestLongtextB = longtext[i + prefixLength ..^ 1]
         bestShorttextA = shorttext[0 ..< j - suffixLength]
         bestShorttextB = shorttext[j + prefixLength ..^ 1]
-      return
-        if bestCommon.len * 2 >= longtext.len:
-          some (
-            bestLongtextA, bestLongtextB, bestShorttextA, bestShorttextB, bestCommon
-          )
-        else:
-          none(tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string])
-
-    # if j == NotFound:
-    #   return none(tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string])
-    # let
-    #   prefixLength = commonPrefix(longtext[i..^1], shorttext[j..^1])
-    #   suffixLength = commonSuffix(longtext[0..<i], shorttext[0..<j])
-    #   mid_common = seed & longtext[i + seed.len..<i + prefixLength]
-    # if mid_common.len * 2 >= longtext.len:
-    #   return some((
-    #     longtext[0..<i - suffixLength],
-    #     longtext[i + prefixLength..^1],
-    #     shorttext[0..<j - suffixLength],
-    #     shorttext[j + prefixLength..^1],
-    #     mid_common
-    #   ))
-    # return none(tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string])
+    if bestCommon.len * 2 >= longtext.len:
+      result =
+        (bestLongtextA, bestLongtextB, bestShorttextA, bestShorttextB, bestCommon).some
 
   # ------ halfMatchI END -------
 
   let
     hm1 = halfMatchI(longtext, shorttext, (longtext.len + 3) div 4)
     hm2 = halfMatchI(longtext, shorttext, (longtext.len + 1) div 2)
-    # hm: Option[tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string]]
+    # hm: Option[HalfMatch]
     hm =
       if hm1.isNone and hm2.isNone:
-        return none(tuple[text1_a, text1_b, text2_a, text2_b, mid_common: string])
+        return none(HalfMatch)
       elif hm2.isNone:
         hm1
       elif hm1.isNone:
         hm2
       else:
-        if hm1.get.mid_common.len > hm2.get.mid_common.len: hm1 else: hm2
+        if hm1.get.midCommon.len > hm2.get.midCommon.len: hm1 else: hm2
 
   result =
     if (text1.len > text2.len):
@@ -899,12 +878,12 @@ proc computeDiff(
   if hm.isSome:
     # A half-match was found, sort out the return data.
     let
-      (text1_a, text1_b, text2_a, text2_b, mid_common) = hm.get
+      (text1A, text1B, text2A, text2B, midCommon) = hm.get
       # Send both pairs off for separate processing.
-      diffs_a = makeDiffs(text1_a, text2_a, checklines, deadline, params)
-      diffs_b = makeDiffs(text1_b, text2_b, checklines, deadline, params)
+      diffs_a = makeDiffs(text1A, text2A, checklines, deadline, params)
+      diffs_b = makeDiffs(text1B, text2B, checklines, deadline, params)
     # Merge the results.
-    return diffs_a & @[(Equal, mid_common)] & diffs_b
+    return diffs_a & @[(Equal, midCommon)] & diffs_b
 
   if checklines and text1.len > 100 and text2.len > 100:
     return lineMode(text1, text2, deadline, params)

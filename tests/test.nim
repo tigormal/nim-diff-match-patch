@@ -56,7 +56,9 @@ suite "Half Match":
       ("qHillo", "w", "x", "Hulloy", "HelloHe")
 
   test "Optimal no halfmatch":
-    check halfMatch("qHilloHelloHew", "xHelloHeHulloy").isNone
+    var dmp = newDiffMatchPatch()
+    dmp.diffTimeout = 0
+    check halfMatch("qHilloHelloHew", "xHelloHeHulloy", dmp).isNone
 
 suite "Lines to Chars":
   test "Basic Operations":
