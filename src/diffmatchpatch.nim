@@ -1,4 +1,5 @@
 import std/[nre, strutils, sequtils, times, uri, options, tables]
+import std/strformat
 import unicode
 
 # {.experimental: "codeReordering".}
@@ -6,6 +7,9 @@ import unicode
 const
   NotFound* = -1
   UnicodeMaxCode = 0x10FFFF
+let
+  BlankLineEnd = re"(?m)\n\r?\n$"
+  BlankLineStart = re"(?m)^\r?\n\r?\n"
 
 type
   DiffOp* = enum
@@ -19,7 +23,7 @@ type
   DMPConfig* = ref object
     diffTimeout: float
     diffEditCost: int
-    matchTreshold: float
+    matchThreshold: float
     matchDistance: int
     patchDeleteThreshold: float
     patchMargin: int
@@ -36,15 +40,24 @@ proc newDiffMatchPatch*(): DMPConfig =
   result = DMPConfig(
     diffTimeout: 1.0,
     diffEditCost: 4,
-    matchTreshold: 0.5,
+    matchThreshold: 0.5,
     matchDistance: 1000,
     patchDeleteThreshold: 0.5,
     patchMargin: 4,
     matchMaxBits: 32,
   )
 
-let defaultParams = newDiffMatchPatch()
+let defaultParams {.compileTime.} = DMPConfig(
+  diffTimeout: 1.0,
+  diffEditCost: 4,
+  matchThreshold: 0.5,
+  matchDistance: 1000,
+  patchDeleteThreshold: 0.5,
+  patchMargin: 4,
+  matchMaxBits: 32,
+)
 
+# PREV: diff_main
 proc makeDiffs*(
   text1, text2: string,
   checklines = true,
@@ -72,14 +85,13 @@ proc linesToChars(
       if lineEnd == NotFound:
         lineEnd = text.len - 1
 
-      line = text[lineStart .. lineEnd]
+      line = text.substr(lineStart, lineEnd)
 
       if lineHash.hasKey(line):
         chars.add(Rune(lineHash[line]))
       else:
         if lineArray.len == maxLines:
-          # TODO: Find Rune() limitations to bail out as in other languages. Or remove the limitation.
-          line = text[lineStart .. ^1]
+          line = text.substr(lineStart)
           lineEnd = text.len
         lineArray.add(line)
         lineHash[line] = lineArray.len - 1
@@ -100,8 +112,7 @@ proc linesToChars(
 proc charsToLines(diffs: var seq[StringDiff], lineArray: seq[string]) =
   for diff in diffs.mitems:
     var text = ""
-    let runes = diff.text.toRunes
-    for r in runes:
+    for r in diff.text.runes:
       let index = r.int
       if index >= 0 and index < lineArray.len:
         text.add(lineArray[index])
@@ -110,11 +121,14 @@ proc charsToLines(diffs: var seq[StringDiff], lineArray: seq[string]) =
 # CHECKED OK
 proc commonPrefix(text1, text2: string): int =
   if text1.len == 0 or text2.len == 0 or text1[0] != text2[0]:
+    #echo fmt"cmn pfx: {text1}, {text2}, 0"
     return 0
   let n = min(text1.len, text2.len)
   for i in 0 ..< n:
     if text1[i] != text2[i]:
+      #echo fmt"cmn pfx: {text1}, {text2}, {$i}"
       return i
+  #echo fmt"cmn pfx: {text1}, {text2}, {$n}"
   return n
 
   # var pointermin = 0
@@ -132,35 +146,37 @@ proc commonPrefix(text1, text2: string): int =
 
 # CHECKED OK
 proc commonSuffix(text1, text2: string): int =
-  let
-    text1Length = text1.len
-    text2Length = text2.len
-    n = min(text1Length, text2Length)
+  #let
+  # text1Length = text1.len
+  #text2Length = text2.len
+  #n = min(text1Length, text2Length)
   # Quick check for common null cases.
-  if text1.len == 0 or text2.len == 0 or text1[^1] != text2[^1]:
-    return 0
-  for i in 1 .. n:
-    if text1[text1Length - i] != text2[text2Length - i]:
-      return i - 1
-  return n
+  #if text1.len == 0 or text2.len == 0 or text1[^1] != text2[^1]:
+  # return 0
+  #for i in 1 .. n:
+  # if text1[text1Length - i] != text2[text2Length - i]:
+  #  return i - 1
+  #return n
 
   # Binary search.
   # Performance analysis: https://neil.fraser.name/news/2007/10/09/
-  # var
-  #   pointermin = 0
-  #   pointermax = min(text1.len, text2.len)
-  #   pointermid = pointermax
-  #   pointerend = 0
+  var
+    pointermin = 0
+    pointermax = min(text1.len, text2.len)
+    pointermid = pointermax
+    pointerend = 0
 
-  # while pointermin < pointermid:
-  #   if text1[^pointermid..^1] == text2[^pointermid..^1]:
-  #     pointermin = pointermid
-  #     pointerend = pointermin
-  #   else:
-  #     pointermax = pointermid
-  #   pointermid = (pointermax - pointermin) div 2 + pointermin
+  while pointermin < pointermid:
+    if text1[text1.len - pointermid ..< text1.len - pointerend] ==
+        text2[text2.len - pointermid ..< text2.len - pointerend]:
+      pointermin = pointermid
+      pointerend = pointermin
+    else:
+      pointermax = pointermid
+    pointermid = (pointermax - pointermin) div 2 + pointermin
 
-  # return pointermid
+  #echo fmt"cmn sfx: {text1}, {text2}, {$pointermid}"
+  return pointermid
 
 # CHECKED OK
 proc commonOverlap(text1, text2: string): int =
@@ -206,12 +222,14 @@ proc cleanupSemanticScore(one, two: string): int =
     char2 = two[0]
     nonAlphaNumeric1 = not char1.isAlphaNumeric
     nonAlphaNumeric2 = not char2.isAlphaNumeric
-    whitespace1 = nonAlphaNumeric1 and (char1 in Whitespace - Newlines)
-    whitespace2 = nonAlphaNumeric2 and (char2 in Whitespace - Newlines)
+    whitespace1 = nonAlphaNumeric1 and char1.isSpaceAscii
+      #(char1 in Whitespace - Newlines)
+    whitespace2 = nonAlphaNumeric2 and char2.isSpaceAscii
+      #(char2 in Whitespace - Newlines)
     lineBreak1 = whitespace1 and (char1 in Newlines)
     lineBreak2 = whitespace2 and (char2 in Newlines)
-    blankLine1 = lineBreak1 and unicode.strip(one).len == 0 # SUS
-    blankLine2 = lineBreak2 and unicode.strip(two).len == 0
+    blankLine1 = lineBreak1 and find(one, BlankLineEnd).isSome
+    blankLine2 = lineBreak2 and find(two, BlankLineStart).isSome
 
   if blankLine1 or blankLine2:
     return 5
@@ -227,11 +245,12 @@ proc cleanupSemanticScore(one, two: string): int =
 
 # CHECKED OK
 proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
-  var thisPointer = 1
+  var i = 1
   var
     equality1: string = ""
     edit: string = ""
     equality2: string = ""
+    commonString: string
     bestEquality1: string
     bestEdit: string
     bestEquality2: string
@@ -239,19 +258,19 @@ proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
     score: int
 
   # Intentionally ignore the first and last element (don't need checking).
-  while thisPointer < diffs.len - 1:
-    if diffs[thisPointer - 1].op == Equal and diffs[thisPointer + 1].op == Equal:
+  while i < diffs.len - 1:
+    if diffs[i - 1].op == Equal and diffs[i + 1].op == Equal:
       # This is a single edit surrounded by equalities.
-      equality1 = diffs[thisPointer - 1].text
-      edit = diffs[thisPointer].text
-      equality2 = diffs[thisPointer + 1].text
+      equality1 = diffs[i - 1].text
+      edit = diffs[i].text
+      equality2 = diffs[i + 1].text
 
       # First, shift the edit as far left as possible.
       let commonOffset = commonSuffix(equality1, edit)
-      if commonOffset > 0:
-        let commonString = edit[^commonOffset ..^ 1]
-        equality1 = equality1[0 ..^ (commonOffset + 1)]
-        edit = commonString & edit[0 ..^ (commonOffset + 1)]
+      if commonOffset != 0:
+        commonString = edit.substr(edit.len - commonOffset)
+        equality1 = equality1.substr(0, equality1.len - commonOffset - 1)
+        edit = commonString & edit.substr(0, edit.len - commonOffset - 1)
         equality2 = commonString & equality2
 
       # Second, step character by character right, looking for the best fit.
@@ -261,10 +280,10 @@ proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
       bestScore =
         cleanupSemanticScore(equality1, edit) + cleanupSemanticScore(edit, equality2)
 
-      while edit.len > 0 and equality2.len > 0 and edit[0] == equality2[0]:
+      while edit.len != 0 and equality2.len != 0 and edit[0] == equality2[0]:
         equality1 &= edit[0]
-        edit = edit[1 ..^ 1] & equality2[0]
-        equality2 = equality2[1 ..^ 1]
+        edit = edit.substr(1) & equality2[0]
+        equality2 = equality2.substr(1)
         score =
           cleanupSemanticScore(equality1, edit) + cleanupSemanticScore(edit, equality2)
         # The >= encourages trailing rather than leading whitespace on edits.
@@ -274,144 +293,135 @@ proc cleanupSemanticLossless(diffs: var seq[StringDiff]) =
           bestEdit = edit
           bestEquality2 = equality2
 
-      if diffs[thisPointer - 1].text != bestEquality1:
+      if diffs[i - 1].text != bestEquality1:
         # We have an improvement, save it back to the diff.
         if bestEquality1.len > 0:
-          # diffs[thisPointer - 1] = (Equal, bestEquality1)
-          diffs[thisPointer - 1].text = bestEquality1
+          # diffs[i - 1] = (Equal, bestEquality1)
+          diffs[i - 1].text = bestEquality1
         else:
-          diffs.delete(thisPointer - 1)
-          dec thisPointer
-        # diffs[thisPointer] = (diffs[thisPointer][0], bestEdit)
-        diffs[thisPointer] = (diffs[thisPointer][0], bestEdit)
+          diffs.delete(i - 1)
+          dec i
+        # diffs[i] = (diffs[i][0], bestEdit)
+        diffs[i].text = bestEdit
         if bestEquality2.len > 0:
-          # diffs[thisPointer + 1] = (Equal, bestEquality2)
-          diffs[thisPointer + 1].text = bestEquality2
+          # diffs[i + 1] = (Equal, bestEquality2)
+          diffs[i + 1].text = bestEquality2
         else:
-          diffs.delete(thisPointer + 1)
-          dec thisPointer
+          diffs.delete(i + 1)
+          dec i
 
-    inc thisPointer
+    inc i
+
+proc cleanupMerge(diffs: var seq[StringDiff])
 
 # CHECKED OK
 proc cleanupMerge(diffs: var seq[StringDiff]) =
+  #echo "cleanupMerge start"
   # Add a dummy entry at the end.
   diffs.add((Equal, ""))
   var
-    thisPointer = 0
-    countDelete = 0
-    countInsert = 0
+    i = 0
+    countDelete: Natural = 0
+    countInsert: Natural = 0
     textDelete = ""
     textInsert = ""
-    commonLength: int # TODO: Ordinal
-    newOps: seq[StringDiff] = @[]
+    commonLength: Natural
 
-  while thisPointer < diffs.len:
-    case diffs[thisPointer].op
+  while i < diffs.len:
+    case diffs[i].op
     of Insert:
       inc countInsert
-      textInsert &= diffs[thisPointer].text
-      # Added manually:
-      inc thisPointer
-      break
+      textInsert &= diffs[i].text
+      echo fmt"textInsert: {textInsert}"
+      inc i
     of Delete:
       inc countDelete
-      textDelete &= diffs[thisPointer].text
-      # Added manually:
-      inc thisPointer
-      break
+      textDelete &= diffs[i].text
+      echo fmt"textDelete: {textDelete}"
+      inc i
     of Equal:
       # Upon reaching an equality, check for prior redundancies.
       if countDelete + countInsert > 1:
         if countDelete != 0 and countInsert != 0:
           # Factor out any common prefixes.
+          #echo "cleanupMerge factor out prefixes"
           commonLength = commonPrefix(textInsert, textDelete)
           if commonLength != 0:
-            let x = thisPointer - countDelete - countInsert - 1
+            let x = i - countDelete - countInsert - 1
             if x >= 0 and diffs[x].op == Equal:
-              diffs[x] = (Equal, diffs[x].text & textInsert[0 ..< commonLength])
+              diffs[x].text &= textInsert.substr(0, commonLength - 1)
             else:
-              diffs.insert((Equal, textInsert[0 ..< commonLength]), 0)
-              inc thisPointer
-            textInsert = textInsert[commonLength ..^ 1]
-            textDelete = textDelete[commonLength ..^ 1]
+              diffs.insert((Equal, textInsert.substr(0, commonLength - 1)), 0)
+              inc i
+            textInsert = textInsert.substr(commonLength)
+            textDelete = textDelete.substr(commonLength)
+            echo fmt"textInsert: {textInsert}, textDelete: {textDelete}"
 
           # Factor out any common suffixes.
+          #echo "cleanupMerge factor out suffixes"
           commonLength = commonSuffix(textInsert, textDelete)
           if commonLength != 0:
-            # diffs[thisPointer] = (Equal, textInsert[^commonLength..^1] & diffs[thisPointer][1])
-            # textInsert = textInsert[0..^(commonLength+1)]
-            # textDelete = textDelete[0..^(commonLength+1)]
-            diffs[thisPointer] = (
-              Equal,
-              textInsert[^(textInsert.len - commonLength) ..^ 1] & diffs[thisPointer][1],
-            )
-            textInsert = textInsert[0 ..^ (textInsert.len - commonLength)]
-            textDelete = textDelete[0 ..^ (textInsert.len - commonLength)]
+            diffs[i].text =
+              textInsert.substr(textInsert.len - commonLength) & diffs[i].text
+            textInsert = textInsert.substr(0, textInsert.len - commonLength - 1)
+            textDelete = textDelete.substr(0, textDelete.len - commonLength - 1)
+            #echo fmt"textInsert: {textInsert}, textDelete: {textDelete}"
 
         # Delete the offending records and add the merged ones.
+        #echo "cleanupMerge delete offending"
+        var newOps: seq[StringDiff] = @[]
         if textDelete.len != 0:
           newOps.add((Delete, textDelete))
         if textInsert.len != 0:
           newOps.add((Insert, textInsert))
-        diffs.delete(thisPointer - countDelete - countInsert .. thisPointer)
-        thisPointer = thisPointer - countDelete - countInsert
-        for op in newOps:
-          diffs.insert(op, thisPointer)
-          inc thisPointer
-        inc thisPointer
-      elif thisPointer != 0 and diffs[thisPointer - 1].op == Equal:
+        #echo newOps
+        i -= countDelete + countInsert
+        diffs[i ..< i + countDelete + countInsert] = newOps
+        i += newOps.len + 1
+      elif i != 0 and diffs[i - 1].op == Equal:
         # Merge this equality with the previous one.
-        diffs[thisPointer - 1] =
-          (Equal, diffs[thisPointer - 1].text & diffs[thisPointer][1])
-        diffs.delete(thisPointer)
+        #echo "cleanupMerge merge equalitiles"
+        diffs[i - 1].text &= diffs[i].text
+        diffs.delete(i)
       else:
-        inc thisPointer
+        inc i
 
+      echo "reset vars"
       countInsert = 0
       countDelete = 0
       textDelete = ""
       textInsert = ""
 
-  if diffs[^1][1].len == 0:
+  if diffs[^1].text.len == 0:
     diffs.setLen(diffs.len - 1) # Remove the dummy entry at the end.
 
   # Second pass: look for single edits surrounded on both sides by equalities
   # which can be shifted sideways to eliminate an equality.
   # e.g: A<ins>BA</ins>C -> <ins>AB</ins>AC
   var changes = false
-  thisPointer = 1
+  i = 1
   # Intentionally ignore the first and last element (don't need checking).
-  while thisPointer < diffs.len - 1:
-    if diffs[thisPointer - 1].op == Equal and diffs[thisPointer + 1].op == Equal:
+  while i < diffs.len - 1:
+    if diffs[i - 1].op == Equal and diffs[i + 1].op == Equal:
       # This is a single edit surrounded by equalities.
-      if diffs[thisPointer][1].endsWith(diffs[thisPointer - 1][1]):
+      if diffs[i].text.endsWith(diffs[i - 1].text):
         # Shift the edit over the previous equality.
-        diffs[thisPointer] = (
-          diffs[thisPointer][0],
-          diffs[thisPointer - 1].text &
-            diffs[thisPointer][1][0 ..^ (diffs[thisPointer - 1][1].len + 1)],
-        )
-        diffs[thisPointer + 1] = (
-          diffs[thisPointer + 1][0],
-          diffs[thisPointer - 1].text & diffs[thisPointer + 1][1],
-        )
-        diffs.delete(thisPointer - 1)
+        if diffs[i - 1].text != "":
+          diffs[i].text =
+            diffs[i - 1].text &
+            diffs[i].text.substr(0, diffs[i].text.len - diffs[i - 1].text.len - 1)
+          diffs[i + 1].text = diffs[i - 1].text & diffs[i + 1].text
+        diffs.delete(i - 1)
+        #echo "changes: true"
         changes = true
-      elif diffs[thisPointer][1].startsWith(diffs[thisPointer + 1][1]):
+      elif diffs[i].text.startsWith(diffs[i + 1].text):
         # Shift the edit over the next equality.
-        diffs[thisPointer - 1] = (
-          diffs[thisPointer - 1][0],
-          diffs[thisPointer - 1].text & diffs[thisPointer + 1][1],
-        )
-        diffs[thisPointer] = (
-          diffs[thisPointer][0],
-          diffs[thisPointer][1][diffs[thisPointer + 1][1].len ..^ 1] &
-            diffs[thisPointer + 1][1],
-        )
-        diffs.delete(thisPointer + 1)
+        diffs[i - 1].text &= diffs[i + 1].text
+        diffs[i].text = diffs[i].text.substr(diffs[i + 1].text.len) & diffs[i + 1].text
+        diffs.delete(i + 1)
+        #echo "changes: true"
         changes = true
-    inc thisPointer
+    inc i
 
   # If shifts were made, the diff needs reordering and another shift sweep.
   if changes:
@@ -423,21 +433,21 @@ proc cleanupEfficiency(diffs: var seq[StringDiff], params: DMPConfig) =
     changes = false
     equalities: seq[int] = @[] # Stack of indices where equalities are found.
     lastEquality = "" # Always equal to diffs[equalities[^1]][1]
-    thisPointer = 0 # Index of current position.
+    i = 0 # Index of current position.
     pre_ins = false # Is there an insertion operation before the last equality.
     pre_del = false # Is there a deletion operation before the last equality.
     post_ins = false # Is there an insertion operation after the last equality.
     post_del = false # Is there a deletion operation after the last equality.
 
-  while thisPointer < diffs.len:
-    case diffs[thisPointer].op
+  while i < diffs.len:
+    case diffs[i].op
     of Equal: # Equality found.
-      if diffs[thisPointer][1].len < params.diffEditCost and (post_ins or post_del):
+      if diffs[i][1].len < params.diffEditCost and (post_ins or post_del):
         # Candidate found.
-        equalities.add(thisPointer)
+        equalities.add(i)
         pre_ins = post_ins
         pre_del = post_del
-        lastEquality = diffs[thisPointer].text
+        lastEquality = diffs[i].text
       else:
         # Not a candidate, and can never become one.
         equalities.setLen(0)
@@ -446,7 +456,7 @@ proc cleanupEfficiency(diffs: var seq[StringDiff], params: DMPConfig) =
       post_ins = false
       post_del = false
     else: # An insertion or deletion.
-      if diffs[thisPointer].op == Delete:
+      if diffs[i].op == Delete:
         post_del = true
       else:
         post_ins = true
@@ -479,14 +489,14 @@ proc cleanupEfficiency(diffs: var seq[StringDiff], params: DMPConfig) =
           if equalities.len > 0:
             equalities.setLen(equalities.len - 1) # Throw away the previous equality.
           if equalities.len > 0:
-            thisPointer = equalities[^1]
+            i = equalities[^1]
           else:
-            thisPointer = -1
+            i = -1
           post_ins = false
           post_del = false
         changes = true
 
-    inc thisPointer
+    inc i
 
   if changes:
     cleanupMerge(diffs)
@@ -496,8 +506,8 @@ proc xIndex(diffs: seq[StringDiff], loc: int): int =
   var
     chars1 = 0
     chars2 = 0
-    last_chars1 = 0
-    last_chars2 = 0
+    lastChars1 = 0
+    lastChars2 = 0
     lastDiff: Option[StringDiff]
 
   for (op, text) in diffs:
@@ -508,53 +518,53 @@ proc xIndex(diffs: seq[StringDiff], loc: int): int =
 
     # FIX Rewritten manually:
     if chars1 > loc:
-      # return last_chars2
+      # return lastChars2
       lastDiff = (op, text).some
       break
 
-    last_chars1 = chars1
-    last_chars2 = chars2
-  if lastDiff.isNone and lastDiff.get()[0] == Delete:
-    return last_chars2
-  return last_chars2 + (loc - last_chars1)
+    lastChars1 = chars1
+    lastChars2 = chars2
+  if lastDiff.isSome and lastDiff.get.op == Delete:
+    return lastChars2
+  return lastChars2 + (loc - lastChars1)
   # return diffs.len
 
-# CHECKED SUS (maybe subst `div` with `/`)
+# CHECKED OK
 proc cleanupSemantic(diffs: var seq[StringDiff]) =
   var
     changes = false
     equalities: seq[int] = @[]
     lastEquality = ""
-    thisPointer = 0
+    i = 0
     lengthInsertions1 = 0
     lengthDeletions1 = 0
     lengthInsertions2 = 0
     lengthDeletions2 = 0
 
-  while thisPointer < diffs.len:
-    if diffs[thisPointer].op == Equal:
-      equalities.add(thisPointer)
+  while i < diffs.len:
+    if diffs[i].op == Equal:
+      equalities.add(i)
       lengthInsertions1 = lengthInsertions2
       lengthDeletions1 = lengthDeletions2
       lengthInsertions2 = 0
       lengthDeletions2 = 0
-      lastEquality = diffs[thisPointer].text
+      lastEquality = diffs[i].text
     else:
-      if diffs[thisPointer].op == Insert:
-        lengthInsertions2 += diffs[thisPointer][1].len
+      if diffs[i].op == Insert:
+        lengthInsertions2 += diffs[i].text.len
       else:
-        lengthDeletions2 += diffs[thisPointer][1].len
+        lengthDeletions2 += diffs[i].text.len
 
-      if lastEquality.len > 0 and (
+      if (lastEquality.len > 0) and (
         lastEquality.len <= max(lengthInsertions1, lengthDeletions1) and
         lastEquality.len <= max(lengthInsertions2, lengthDeletions2)
       ):
         diffs.insert((Delete, lastEquality), equalities[^1])
-        diffs[equalities[^1] + 1] = (Insert, diffs[equalities[^1] + 1][1])
+        diffs[equalities[^1] + 1] = (Insert, diffs[equalities[^1] + 1].text)
         equalities.setLen(equalities.len - 1)
         if equalities.len > 0:
           equalities.setLen(equalities.len - 1)
-        thisPointer =
+        i =
           if equalities.len > 0:
             equalities[^1]
           else:
@@ -566,40 +576,42 @@ proc cleanupSemantic(diffs: var seq[StringDiff]) =
         lastEquality = ""
         changes = true
 
-    inc thisPointer
+    inc i
 
   if changes:
     cleanupMerge(diffs)
 
   cleanupSemanticLossless(diffs)
 
-  thisPointer = 1
-  # while thisPointer < diffs.len - 1:
-  while thisPointer < diffs.len:
-    if diffs[thisPointer - 1].op == Delete and diffs[thisPointer + 1].op == Insert:
+  i = 1
+  while i < diffs.len:
+    if diffs[i - 1].op == Delete and diffs[i].op == Insert:
       let
-        deletion = diffs[thisPointer - 1].text
-        insertion = diffs[thisPointer + 1].text
-        overlap_length1 = commonOverlap(deletion, insertion)
-        overlap_length2 = commonOverlap(insertion, deletion)
+        deletion = diffs[i - 1].text
+        insertion = diffs[i].text
+        overlapLen1 = commonOverlap(deletion, insertion)
+        overlapLen2 = commonOverlap(insertion, deletion)
 
-      if overlap_length1 >= overlap_length2:
-        if overlap_length1 >= deletion.len div 2 or
-            overlap_length1 >= insertion.len div 2:
-          diffs.insert((Equal, insertion[0 ..< overlap_length1]), thisPointer)
-          diffs[thisPointer - 1].text = deletion[0 ..< deletion.len - overlap_length1]
-          diffs[thisPointer + 1].text = insertion[overlap_length1 ..^ 1]
-          inc thisPointer
+      if overlapLen1 >= overlapLen2:
+        if float(overlapLen1) >= float(deletion.len) / 2 or
+            float(overlapLen1) >= float(insertion.len) / 2:
+          diffs.insert(
+            (Equal, insertion.substr(0, overlapLen1 - 1)),
+          i)
+          diffs[i - 1].text = deletion.substr(0, deletion.len - overlapLen1 - 1)
+          diffs[i + 1].text = insertion.substr(overlapLen1)
+          inc i
       else:
-        if overlap_length2 >= deletion.len div 2 or
-            overlap_length2 >= insertion.len div 2:
-          diffs.insert((Equal, deletion[0 ..< overlap_length2]), thisPointer)
-          diffs[thisPointer - 1] =
-            (Insert, insertion[0 ..< insertion.len - overlap_length2])
-          diffs[thisPointer + 1] = (Delete, deletion[overlap_length2 ..^ 1])
-          inc thisPointer
-      inc thisPointer
-    inc thisPointer
+        if overlapLen2 >= deletion.len div 2 or
+            overlapLen2 >= insertion.len div 2:
+          diffs.insert(
+            (Equal, deletion.substr(0, overlapLen2 - 1)),
+          i)
+          diffs[i - 1] = (Insert, insertion.substr(0, insertion.len - overlapLen2 - 1))
+          diffs[i + 1] = (Delete, deletion.substr(overlapLen2))
+          inc i
+      inc i
+    inc i
 
 # CHECKED OK
 proc lineMode(
@@ -612,48 +624,43 @@ proc lineMode(
 
   # Convert the diff back to original text.
   charsToLines(diffs, linearray)
+  echo "charsToLines", diffs, "\n"
   # Eliminate freak matches (e.g. blank lines)
   cleanupSemantic(diffs)
 
   # Rediff any replacement blocks, this time character-by-character.
   # Add a dummy entry at the end.
   diffs.add((Equal, ""))
-  var thisPointer = 0
+  var i = 0
   var countDelete = 0
   var countInsert = 0
   var textDelete = ""
   var textInsert = ""
-  while thisPointer < diffs.len:
-    case diffs[thisPointer].op
+  while i < diffs.len:
+    case diffs[i].op
     of Insert:
       inc countInsert
-      textInsert &= diffs[thisPointer].text
+      textInsert &= diffs[i].text
     of Delete:
       inc countDelete
-      textDelete &= diffs[thisPointer].text
+      textDelete &= diffs[i].text
     of Equal:
       # Upon reaching an equality, check for prior redundancies.
       if countDelete >= 1 and countInsert >= 1:
         # Delete the offending records and add the merged ones.
         var subDiffs = makeDiffs(textDelete, textInsert, false, deadline, params)
-        # diffs[thisPointer - countDelete - countInsert ..< thisPointer] = subDiffs # maybe .. and not ..<
-        diffs.delete(
-          thisPointer - count_delete - count_insert ..< count_delete + count_insert
-        )
-        thisPointer = thisPointer - countDelete - countInsert
-        # for (op, data) in subDiffs:
-        #   diffs.insert((op, data), thisPointer)
-        #   thisPointer += 1
-        var insIdx = thisPointer
+        diffs.delete(i - count_delete - count_insert ..< count_delete + count_insert)
+        i = i - countDelete - countInsert
+        var insIdx = i
         for diff in subDiffs:
           diffs.insert(diff, insIdx)
           inc insIdx
-        thisPointer += subDiffs.len
+        i += subDiffs.len
       countInsert = 0
       countDelete = 0
       textDelete = ""
       textInsert = ""
-    inc thisPointer
+    inc i
 
   diffs.setLen(diffs.len - 1) # Remove the dummy entry at the end.
   diffs
@@ -723,7 +730,7 @@ proc bisect(
         # Ran off the bottom of the graph.
         k1start += 2
       elif front:
-        let k2_offset = v_offset + delta - k1 # max_d?
+        let k2_offset = v_offset + delta - k1
         if k2_offset >= 0 and k2_offset < v_length and v2[k2_offset] != -1:
           # Mirror x2 onto top-left coordinate system.
           let x2 = text1Length - v2[k2_offset]
@@ -863,9 +870,9 @@ proc computeDiff(
     let op = if text1.len > text2.len: Delete else: Insert
     return
       @[
-        (op, longtext[0 ..< i]),
+        (op, longtext.substr(0, i - 1)),
         (Equal, shorttext),
-        (op, longtext[i + shorttext.len ..^ 1]),
+        (op, longtext.substr(i + shorttext.len)),
       ]
 
   if shorttext.len == 1:
@@ -906,8 +913,8 @@ proc makeDiffs*(
     else:
       deadline = epochTime() + params.diffTimeout
 
-  if text1 == nil or text2 == nil: # TODO: refurbish
-    raise newException(ValueError, "Null inputs. (makeDiffs)")
+  #if text1 == nil or text2 == nil:
+  #  raise newException(ValueError, "Null inputs. (makeDiffs)")
 
   if text1 == text2:
     if text1.len > 0:
@@ -916,25 +923,26 @@ proc makeDiffs*(
 
   # Trim off common prefix
   var commonLength = commonPrefix(text1, text2)
-  let commonPrefix = text1[0 ..< commonLength]
-  text1 = text1[commonLength .. ^1]
-  text2 = text2[commonLength .. ^1]
+  let commonPrefix = text1.substr(0, commonLength - 1)
+  text1 = text1.substr(commonLength)
+  text2 = text2.substr(commonLength)
 
   # Trim off common suffix
   commonLength = commonSuffix(text1, text2)
-  let commonsuffix = text1[text1.len - commonLength .. ^1]
-  text1 = text1[0 ..< text1.len - commonLength]
-  text2 = text2[0 ..< text2.len - commonLength]
+  let commonsuffix = text1.substr(text1.len - commonLength)
+  text1 = text1.substr(0, text1.len - commonLength - 1)
+  text2 = text2.substr(0, text2.len - commonLength - 1)
 
   # Compute the diff on the middle block
   result = computeDiff(text1, text2, checklines, deadline, params)
 
   # Restore the prefix and suffix
-  if commonPrefix.len > 0:
+  if commonPrefix.len != 0:
     result.insert((Equal, commonPrefix), 0)
-  if commonsuffix.len > 0:
+  if commonsuffix.len != 0:
     result.add((Equal, commonsuffix))
-  cleanupMerge(result)
+  echo "computeDiff", result
+  cleanupMerge(result) # kvar
 
 # CHECKED OK
 proc prettyHtml*(diffs: seq[StringDiff]): string =
@@ -954,14 +962,12 @@ proc prettyHtml*(diffs: seq[StringDiff]): string =
       result &= "<span>" & data & "</span>"
 
 proc diffText1(diffs: seq[StringDiff]): string =
-  # result = ""
   for (op, data) in diffs:
     if op != Insert:
       result &= data
 
 #CHECKED
 proc diffText2(diffs: seq[StringDiff]): string =
-  # result = ""
   for (op, data) in diffs:
     if op != Delete:
       result &= data
@@ -969,9 +975,9 @@ proc diffText2(diffs: seq[StringDiff]): string =
 # CHECKED
 func levenshtein(diffs: seq[StringDiff]): int =
   var
-    levenshtein = 0
     insertions = 0
     deletions = 0
+  result = 0 # levenshtein
 
   for (op, data) in diffs:
     case op
@@ -980,12 +986,11 @@ func levenshtein(diffs: seq[StringDiff]): int =
     of Delete:
       deletions += data.len
     of Equal:
-      levenshtein += max(insertions, deletions)
+      result += max(insertions, deletions)
       insertions = 0
       deletions = 0
 
-  levenshtein += max(insertions, deletions)
-  # levenshtein
+  result += max(insertions, deletions)
 
 # CHECKED MAYBE OK
 proc matchAlphabet(
@@ -997,18 +1002,9 @@ proc matchAlphabet(
   for i in 0 ..< pattern.len:
     result[pattern[i]] = result[pattern[i]] or (1 shl (pattern.len - i - 1))
 
-proc bitapScore(
-    e, x, loc: int, pattern: string, params: DMPConfig = defaultParams
-): float =
-  let accuracy = e / pattern.len
-  let proximity = abs(loc - x)
-  if params.matchDistance == 0:
-    # Dodge divide by zero error.
-    return if proximity == 0: accuracy else: 1.0
-  return accuracy + (float(proximity) / float(params.matchDistance))
 
 # CHECKED OK
-proc bitap(text, pattern: string, loc: int, params: DMPConfig = defaultParams): int =
+func bitap(text, pattern: string, loc: int, params: DMPConfig = defaultParams): int =
   assert(
     params.matchMaxBits == 0 or pattern.len <= params.matchMaxBits,
     "Pattern too long for this application.",
@@ -1017,16 +1013,24 @@ proc bitap(text, pattern: string, loc: int, params: DMPConfig = defaultParams): 
   # Initialise the alphabet.
   let s = matchAlphabet(pattern, params)
 
+  func bitapScore(e, x: int): float =
+    let accuracy = float(e) / float(pattern.len)
+    let proximity = abs(loc - x)
+    if params.matchDistance == 0:
+      # Dodge divide by zero error.
+      return if proximity == 0: accuracy else: 1.0
+    return accuracy + (float(proximity) / float(params.matchDistance))
+
   # Highest score beyond which we give up.
-  var scoreThreshold = params.matchTreshold
+  var scoreThreshold = params.matchThreshold
   # Is there a nearby exact match? (speedup)
   var bestLoc = text.find(pattern, loc)
   if bestLoc != NotFound:
-    scoreThreshold = min(bitapScore(0, bestLoc, loc, pattern, params), scoreThreshold)
+    scoreThreshold = min(bitapScore(0, bestLoc), scoreThreshold)
     # What about in the other direction? (speedup)
     bestLoc = text.rfind(pattern, loc + pattern.len)
     if bestLoc != NotFound:
-      scoreThreshold = min(bitapScore(0, bestLoc, loc, pattern, params), scoreThreshold)
+      scoreThreshold = min(bitapScore(0, bestLoc), scoreThreshold)
 
   # Initialise the bit arrays.
   let matchmask = 1 shl (pattern.len - 1)
@@ -1036,11 +1040,11 @@ proc bitap(text, pattern: string, loc: int, params: DMPConfig = defaultParams): 
     binMin, binMid: int
     binMax = pattern.len + text.len
     last_rd: seq[int] = @[]
-  for d in 0 ..< pattern.len: # SUS
+  for d in 0 ..< pattern.len:
     binMin = 0
     binMid = binMax
     while binMin < binMid:
-      if bitapScore(d, loc + binMid, loc, pattern, params) <= scoreThreshold:
+      if bitapScore(d, loc + binMid) <= scoreThreshold:
         binMin = binMid
       else:
         binMax = binMid
@@ -1053,24 +1057,24 @@ proc bitap(text, pattern: string, loc: int, params: DMPConfig = defaultParams): 
     rd[finish + 1] = (1 shl d) - 1
     for j in countdown(finish, start):
       var charMatch: int
-      if text.len <= j - 1 or s.contains(text[j - 1]):
+      if text.len <= j - 1:
         # Out of range.
         charMatch = 0
       else:
-        charMatch = s.getOrDefault(text[j - 1], 0) # this probably can be just get()
+        charMatch = s.getOrDefault(text[j - 1], 0)
       if d == 0:
         # First pass: exact match.
         rd[j] = ((rd[j + 1] shl 1) or 1) and charMatch
       else:
         # Subsequent passes: fuzzy match.
         rd[j] =
-          (((rd[j + 1] shl 1) or 1) and charMatch) or
-          (((last_rd[j + 1] or last_rd[j]) shl 1) or 1) or last_rd[j + 1]
+          ((((rd[j + 1] shl 1) or 1) and charMatch) or
+          (((last_rd[j + 1] or last_rd[j]) shl 1) or 1) or last_rd[j + 1])
       if (rd[j] and matchmask) != 0:
-        let score = bitapScore(d, j - 1, loc, pattern, params)
+        let score = bitapScore(d, j - 1)
+        # This match will almost certainly be better than any existing match.
+        # But check anyway.
         if score <= scoreThreshold:
-          # This match will almost certainly be better than any existing match.
-          # But check anyway.
           scoreThreshold = score
           bestLoc = j - 1
           if bestLoc > loc:
@@ -1079,14 +1083,13 @@ proc bitap(text, pattern: string, loc: int, params: DMPConfig = defaultParams): 
           else:
             # Already passed loc, downhill from here on in.
             break
-    if bitapScore(d + 1, loc, loc, pattern, params) > scoreThreshold:
+    if bitapScore(d + 1, loc) > scoreThreshold:
       # No hope for a (better) match at greater error levels.
       break
     last_rd = rd
-
   return bestLoc
 
-# CHECKED OK
+# CHECKED OK # PREV: match_main
 proc findMatch(
     text, pattern: string, locInitial: int, params: DMPConfig = defaultParams
 ): int =
@@ -1101,11 +1104,11 @@ proc findMatch(
     return bitap(text, pattern, loc, params)
 
 # CHECKED OK
-proc addContext(patch: var Patch, text: string, params: DMPConfig) =
+proc addContext(patch: var Patch, text: string, params: DMPConfig = defaultParams) =
   if text == "":
     return
   var
-    pattern = text[patch.start2 ..< (patch.start2 + patch.length1)]
+    pattern = text.substr(patch.start2, patch.start2 + patch.length1 - 1)
     padding = 0
 
   # Look for the first and last matches of pattern in text.  If two different
@@ -1116,24 +1119,24 @@ proc addContext(patch: var Patch, text: string, params: DMPConfig) =
   )
   :
     padding += params.patchMargin
-    pattern = text[
-      max(0, patch.start2 - padding) ..<
-        min(text.len, patch.start2 + patch.length1 + padding)
-    ]
+    pattern = text.substr(
+      max(0, patch.start2 - padding),
+      min(text.len, patch.start2 + patch.length1 + padding) - 1
+    )
 
   # Add one chunk for good luck.
   padding += params.patchMargin
 
   # Add the prefix.
-  let prefix = text[max(0, patch.start2 - padding) ..< patch.start2]
+  let prefix = text.substr(max(0, patch.start2 - padding), patch.start2 - 1)
   if prefix != "":
     patch.diffs.insert((Equal, prefix), 0)
 
   # Add the suffix.
-  let suffix = text[
-    patch.start2 + patch.length1 ..<
-      min(text.len, patch.start2 + patch.length1 + padding)
-  ]
+  let suffix = text.substr(
+    patch.start2 + patch.length1,
+    min(text.len, patch.start2 + patch.length1 + padding) - 1
+  )
   if suffix != "":
     patch.diffs.add((Equal, suffix))
 
@@ -1145,7 +1148,7 @@ proc addContext(patch: var Patch, text: string, params: DMPConfig) =
   patch.length2 += prefix.len + suffix.len
 
 # CHECKED OK
-proc makePatch2(
+proc makePatches(
     text1: string, diffs: seq[StringDiff], params: DMPConfig = defaultParams
 ): seq[Patch] =
   result = @[]
@@ -1153,8 +1156,8 @@ proc makePatch2(
     return result # Get rid of the null case.
   var
     patch = Patch(diffs: @[], start1: 0, start2: 0, length1: 0, length2: 0)
-    char_count1 = 0 # Number of characters into the text1 string.
-    char_count2 = 0 # Number of characters into the text2 string.
+    charCount1 = 0 # Number of characters into the text1 string.
+    charCount2 = 0 # Number of characters into the text2 string.
     # Start with text1 (prepatchText) and apply the diffs until we arrive at
     # text2 (postpatchText). We recreate the patches one by one to determine
     # context info.
@@ -1163,44 +1166,44 @@ proc makePatch2(
   for (op, data) in diffs:
     if patch.diffs.len == 0 and op != Equal:
       # A new patch starts here.
-      patch.start1 = char_count1
-      patch.start2 = char_count2
+      patch.start1 = charCount1
+      patch.start2 = charCount2
 
     case op
     of Insert:
       patch.diffs.add((op, data))
       patch.length2 += data.len
       postpatchText =
-        postpatchText[0 ..< char_count2] & data & postpatchText[char_count2 ..^ 1]
+        postpatchText.substr(0, charCount2-1) & data & postpatchText.substr(charCount2)
     of Delete:
       patch.length1 += data.len
       patch.diffs.add((op, data))
       postpatchText =
-        postpatchText[0 ..< char_count2] & postpatchText[(char_count2 + data.len) ..^ 1]
+        postpatchText.substr(0, charCount2-1) & postpatchText.substr(charCount2 + data.len)
     of Equal:
       if data.len <= 2 * params.patchMargin and patch.diffs.len != 0 and
-          op != diffs[^1][0]:
+          (op, data) != diffs[^1]: # FIXED
         # Small equality inside a patch.
         patch.diffs.add((op, data))
         patch.length1 += data.len
         patch.length2 += data.len
       if data.len >= 2 * params.patchMargin and patch.diffs.len != 0:
         # Time for a new patch.
-        # if patch.diffs.len != 0:
-        addContext(patch, prepatchText, params)
-        result.add(patch)
-        patch = Patch(
-          diffs: @[], start1: char_count1, start2: char_count2, length1: 0, length2: 0
-        )
-        # FIX Added manually:
-        prepatchText = postpatchText
-        char_count1 = char_count2
+        if patch.diffs.len != 0:
+          addContext(patch, prepatchText, params)
+          result.add(patch)
+          patch = Patch(
+            diffs: @[], start1: charCount1, start2: charCount2, length1: 0, length2: 0
+          )
+          # FIX Added manually:
+          prepatchText = postpatchText
+          charCount1 = charCount2
 
     # Update the current character count.
     if op != Insert:
-      char_count1 += data.len
+      charCount1 += data.len
     if op != Delete:
-      char_count2 += data.len
+      charCount2 += data.len
 
   # Pick up the leftover patch if not empty.
   if patch.diffs.len != 0:
@@ -1220,7 +1223,13 @@ proc makePatches*(text1, text2: string, params: DMPConfig = defaultParams): seq[
     cleanupSemantic(diffs)
     cleanupEfficiency(diffs, params)
 
-  return makePatch2(text1, diffs, params)
+  return makePatches(text1, diffs, params)
+
+proc makePatches*(diffs: seq[StringDiff], params: DMPConfig = defaultParams): seq[Patch] =
+  makePatches(diffs.diffText1, diffs, params)
+
+proc makePatches*(text1, text2: string, diffs: seq[StringDiff], params: DMPConfig = defaultParams): seq[Patch] {.deprecated.} =
+  makePatches(text1, diffs, params)
 
 # CHECKED OK
 proc deepCopy(patches: seq[Patch]): seq[Patch] =
@@ -1238,54 +1247,58 @@ proc deepCopy(patches: seq[Patch]): seq[Patch] =
 proc addPatchPadding(
     patches: var seq[Patch], params: DMPConfig = defaultParams
 ): string =
+  #echo patches
   let paddingLength = params.patchMargin
   var nullPadding = ""
   for i in 1 .. paddingLength:
     nullPadding &= chr(i)
 
+  #echo $nullPadding.len
+
   # Bump all the patches forward.
-  for patch in patches.mitems:
-    patch.start1 += paddingLength
-    patch.start2 += paddingLength
+  #for patch in patches.mitems:
+  for i in 0..<patches.len:
+    patches[i].start1 += paddingLength
+    patches[i].start2 += paddingLength
 
   # Add some padding on start of first diff.
-  var patch = patches[0]
-  var diffs = patch.diffs
-  if diffs.len == 0 or diffs[0].op != Equal:
+  #var patch = patches[0] # TODO: change this
+  #var diffs = patch.diffs
+  if patches[0].diffs.len == 0 or patches[0].diffs[0].op != Equal:
     # Add nullPadding equality.
-    diffs.insert((Equal, nullPadding), 0)
-    patch.start1 -= paddingLength # Should be 0.
-    patch.start2 -= paddingLength # Should be 0.
-    patch.length1 += paddingLength
-    patch.length2 += paddingLength
-  elif paddingLength > diffs[0][1].len:
+    patches[0].diffs.insert((Equal, nullPadding), 0)
+    patches[0].start1 -= paddingLength # Should be 0.
+    patches[0].start2 -= paddingLength # Should be 0.
+    patches[0].length1 += paddingLength
+    patches[0].length2 += paddingLength
+  elif paddingLength > patches[0].diffs[0].text.len:
     # Grow first equality.
-    let extraLength = paddingLength - diffs[0][1].len
-    diffs[0] = (diffs[0][0], nullPadding[diffs[0][1].len ..^ 1] & diffs[0][1])
-    patch.start1 -= extraLength
-    patch.start2 -= extraLength
-    patch.length1 += extraLength
-    patch.length2 += extraLength
+    let extraLength = paddingLength - patches[0].diffs[0].text.len
+    patches[0].diffs[0].text = nullPadding.substr(patches[0].diffs[0].text.len) & patches[0].diffs[0].text
+    patches[0].start1 -= extraLength
+    patches[0].start2 -= extraLength
+    patches[0].length1 += extraLength
+    patches[0].length2 += extraLength
 
   # Add some padding on end of last diff.
-  patch = patches[^1]
-  diffs = patch.diffs
-  if diffs.len == 0 or diffs[^1].op != Equal:
+  #patch = patches[^1]
+  #diffs = patch.diffs
+  if patches[0].diffs.len == 0 or patches[0].diffs[^1].op != Equal:
     # Add nullPadding equality.
-    diffs.add((Equal, nullPadding))
-    patch.length1 += paddingLength
-    patch.length2 += paddingLength
-  elif paddingLength > diffs[^1][1].len:
+    patches[0].diffs.add((Equal, nullPadding))
+    patches[0].length1 += paddingLength
+    patches[0].length2 += paddingLength
+  elif paddingLength > patches[0].diffs[^1].text.len:
     # Grow last equality.
-    let extraLength = paddingLength - diffs[^1][1].len
-    diffs[^1] = (diffs[^1][0], diffs[^1].text & nullPadding[0 ..< extraLength])
-    patch.length1 += extraLength
-    patch.length2 += extraLength
+    let extraLength = paddingLength - patches[0].diffs[^1].text.len
+    patches[0].diffs[^1].text &= nullPadding.substr(0, extraLength - 1)
+    patches[0].length1 += extraLength
+    patches[0].length2 += extraLength
 
   return nullPadding
 
 # CHECKED MAYBE OK
-proc splitMax(patches: var seq[Patch], params: DMPConfig) =
+proc splitMax(patches: var seq[Patch], params: DMPConfig = defaultParams) =
   # echo "Patches, len " & $patches.len & ":"
   # echo patches
   let patchSize = params.matchMaxBits
@@ -1298,9 +1311,11 @@ proc splitMax(patches: var seq[Patch], params: DMPConfig) =
     # Remove the big old patch.
     patches.delete(i)
     dec i
-    var start1 = bigpatch.start1
-    var start2 = bigpatch.start2
-    var precontext = ""
+    var
+      start1 = bigpatch.start1
+      start2 = bigpatch.start2
+      precontext = ""
+      postcontext = ""
     while bigpatch.diffs.len != 0:
       # Create one of several smaller patches.
       var patch =
@@ -1312,7 +1327,7 @@ proc splitMax(patches: var seq[Patch], params: DMPConfig) =
         patch.diffs.add((Equal, precontext))
 
       while bigpatch.diffs.len != 0 and patch.length1 < patchSize - params.patchMargin:
-        let (op, text) = bigpatch.diffs[0]
+        var (op, text) = bigpatch.diffs[0]
         if op == Insert:
           # Insertions are harmless.
           patch.length2 += text.len
@@ -1330,8 +1345,10 @@ proc splitMax(patches: var seq[Patch], params: DMPConfig) =
           bigpatch.diffs.delete(0)
         else:
           # Deletion or equality.  Only take as much as we can stomach.
-          let text =
-            text[0 ..< min(text.len, patchSize - patch.length1 - params.patchMargin)]
+          # let text = # SUS
+          text = # SUS
+            # text.substr(0, min(text.len, patchSize - patch.length1 - params.patchMargin) - 1)
+            text.substr(0, patchSize - patch.length1 - params.patchMargin - 1)
           patch.length1 += text.len
           start1 += text.len
           if op == Equal:
@@ -1341,31 +1358,33 @@ proc splitMax(patches: var seq[Patch], params: DMPConfig) =
             empty = false
 
           patch.diffs.add((op, text))
-          if text == bigpatch.diffs[0][1]:
+          if text == bigpatch.diffs[0].text:
             bigpatch.diffs.delete(0)
           else:
-            bigpatch.diffs[0] =
-              (bigpatch.diffs[0][0], bigpatch.diffs[0][1][text.len ..^ 1])
+            bigpatch.diffs[0].text = bigpatch.diffs[0].text.substr(text.len)
 
       # Compute the head context for the next patch.
       precontext = diffText2(patch.diffs)
-      precontext = precontext[max(0, precontext.len - params.patchMargin) ..^ 1]
+      # precontext = precontext.substr(max(0, precontext.len - params.patchMargin))
+      precontext = precontext.substr(precontext.len - params.patchMargin)
 
       # Append the end context for this patch.
-      var postcontext = diffText1(bigpatch.diffs)
-      postcontext = postcontext[0 ..< min(postcontext.len, params.patchMargin)]
-        # MAYBE SUS?
+      postcontext = diffText1(bigpatch.diffs)
+      # postcontext = postcontext[0 ..< min(postcontext.len, params.patchMargin)]
+      if postcontext.len > params.patchMargin:
+        postcontext = postcontext.substr(0, params.patchMargin - 1)
       if postcontext.len != 0:
         patch.length1 += postcontext.len
         patch.length2 += postcontext.len
         if patch.diffs.len != 0 and patch.diffs[^1].op == Equal:
-          patch.diffs[^1] = (Equal, patch.diffs[^1].text & postcontext)
+          patch.diffs[^1].text &= postcontext
         else:
           patch.diffs.add((Equal, postcontext))
 
       if not empty:
-        patches.insert(patch, i)
         inc i
+        patches.insert(patch, i)
+    inc i
 
 # CHECKED OK
 proc applyPatches*(
@@ -1376,7 +1395,7 @@ proc applyPatches*(
 
   # Deep copy the patches so that no changes are made to originals.
   var
-    patches = deepCopy(srcPatches)
+    patches = srcPatches #deepCopy(srcPatches)
     nullPadding = addPatchPadding(patches, params)
     text = nullPadding & srcText & nullPadding
 
@@ -1396,26 +1415,26 @@ proc applyPatches*(
       expected_loc = patch.start2 + delta
       text1 = diffText1(patch.diffs)
       start_loc: int
-      end_loc = -1
+      end_loc = NotFound
     if text1.len > params.matchMaxBits:
       # splitMax will only provide an oversized pattern in the case of
       # a monster delete.
       start_loc =
-        findMatch(text, text1[0 ..< params.matchMaxBits], expected_loc, params)
-      if start_loc != -1:
+        findMatch(text, text1.substr(0, params.matchMaxBits - 1), expected_loc, params)
+      if start_loc != NotFound:
         end_loc = findMatch(
           text,
-          text1[^params.matchMaxBits ..^ 1],
+          text1.substr(text1.len - params.matchMaxBits),
           expected_loc + text1.len - params.matchMaxBits,
           params,
         )
-        if end_loc == -1 or start_loc >= end_loc:
+        if end_loc == NotFound or start_loc >= end_loc:
           # Can't find valid trailing context.  Drop this patch.
-          start_loc = -1
+          start_loc = NotFound
     else:
       start_loc = findMatch(text, text1, expected_loc, params)
 
-    if start_loc == -1:
+    if start_loc == NotFound:
       # No match found.  :(
       results[x] = false
       # Subtract the delta for this failed patch from subsequent patches.
@@ -1425,15 +1444,21 @@ proc applyPatches*(
       results[x] = true
       delta = start_loc - expected_loc
       var text2: string
-      if end_loc == -1:
-        text2 = text[start_loc ..< min(start_loc + text1.len, text.len)]
+      if end_loc == NotFound:
+        text2 = text.substr(
+          start_loc,
+          min(start_loc + text1.len, text.len) - 1
+        )
       else:
-        text2 = text[start_loc ..< min(end_loc + params.matchMaxBits, text.len)]
+        text2 = text.substr(
+          start_loc,
+          min(end_loc + params.matchMaxBits, text.len) - 1
+        )
       if text1 == text2:
         # Perfect match, just shove the replacement text in.
         text =
-          text[0 ..< start_loc] & diffText2(patch.diffs) &
-          text[start_loc + text1.len ..^ 1]
+          text.substr(0, start_loc - 1) & diffText2(patch.diffs) &
+          text.substr(start_loc + text1.len)
       else:
         # Imperfect match.  Run a diff to get a framework of equivalent indices.
         var diffs = makeDiffs(text1, text2, false, params = params)
@@ -1450,11 +1475,12 @@ proc applyPatches*(
               case op
               of Insert:
                 text =
-                  text[0 ..< start_loc + index2] & data & text[start_loc + index2 ..^ 1]
+                  text.substr(0, start_loc + index2 - 1) & data &
+                  text.substr(start_loc + index2)
               of Delete:
                 text =
-                  text[0 ..< (start_loc + index2)] &
-                  text[start_loc + xIndex(diffs, index1 + data.len) ..^ 1]
+                  text.substr(0, start_loc + index2 - 1) &
+                  text.substr(start_loc + xIndex(diffs, index1 + data.len))
               else:
                 discard
             if op != Delete:
@@ -1462,8 +1488,16 @@ proc applyPatches*(
     inc x
 
   # Strip the padding off.
-  text = text[nullPadding.len ..^ nullPadding.len]
+  text = text.substr(nullPadding.len, text.len - nullPadding.len - 1)
   return (text, results)
+
+proc unescapeEncode(str: string): string =
+  str.replace("%21", "!").replace("%7E", "~")
+    .replace("%27", "'").replace("%28", "(").replace("%29", ")")
+    .replace("%3B", ";").replace("%2F", "/").replace("%3F", "?")
+    .replace("%3A", ":").replace("%40", "@").replace("%26", "&")
+    .replace("%3D", "=").replace("%2B", "+").replace("%24", "$")
+    .replace("%2C", ",").replace("%23", "#").replace("%2A", "*")
 
 # CHECKED OK
 proc toString*(patch: Patch): string =
@@ -1491,7 +1525,7 @@ proc toString*(patch: Patch): string =
       text &= "-"
     of Equal:
       text &= " "
-    text &= encodeUrl(data, usePlus = true) & "\n"
+    text &= encodeUrl(data, usePlus = true).replace('+', ' ').unescapeEncode & "\n"
   return text
 
 proc `$`*(patch: Patch): string =
@@ -1507,26 +1541,28 @@ proc `$`*(patches: seq[Patch]): string =
   toText(patches)
 
 # CHECKED MAYBE OK
+# TODO: replace var patches with result
 proc patchFromText(textline: string): seq[Patch] =
   var patches: seq[Patch] = @[]
   if textline == "":
     return patches
   var
     text = textline.split('\n')
-    textPointer = 0
+    #textPointer = 0
     patchHeader = re"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@$"
-  while textPointer < text.len:
-    var m = text[textPointer].match(patchHeader)
+  while text.len > 0:
+  #while textPointer < text.len:
+    var m = text[0].match(patchHeader)
+    #echo fmt"text[{textPointer}]: {text[textPointer]}"
     if m.isNone:
-      raise newException(ValueError, "Invalid patch string: " & text[textPointer])
+      raise newException(ValueError, "Invalid patch string: " & text[0])
     var patch = Patch()
-    patches.add(patch)
     let
       capt = m.get.captures
-      start1 = capt[1]
-      length1 = capt[2]
-      start2 = capt[3]
-      length2 = capt[4]
+      start1 = capt[0]
+      length1 = capt[1]
+      start2 = capt[2]
+      length2 = capt[3]
     patch.start1 = parseInt(start1)
     if length1 == "":
       patch.start1.dec
@@ -1547,14 +1583,17 @@ proc patchFromText(textline: string): seq[Patch] =
       patch.start2.dec
       patch.length2 = parseInt(length2)
 
-    inc textPointer
+    text.delete(0)
+    #inc textPointer
 
-    while textPointer < text.len:
-      if text[textPointer] == "":
-        inc textPointer
+    while text.len > 0:
+    #while textPointer < text.len:
+      if text[0].len == 0:
+        text.delete(0)
+        #inc textPointer
         continue
-      var sign = text[textPointer][0]
-      var line = decodeUrl(text[textPointer][1 ..^ 1], decodePlus = true)
+      var sign = text[0][0]
+      var line = decodeUrl(text[0].substr(1).replace("+", "%2B"), decodePlus = false) # TODO: maybe runeSubStr?
 
       case sign
       of '+':
@@ -1572,7 +1611,9 @@ proc patchFromText(textline: string): seq[Patch] =
       else:
         # WTF?
         raise newException(ValueError, "Invalid patch mode '" & $sign & "' in: " & line)
-      inc textPointer
+      text.delete(0)
+      #inc textPointer
+    patches.add(patch)
 
   return patches
 
@@ -1584,13 +1625,13 @@ proc toDelta(diffs: seq[StringDiff]): string =
     of Insert:
       # High ascii will raise UnicodeDecodeError. Use Unicode instead.
       # let encodedData = encodeUrl(data, "!~*'();/?:@&=+$,# ")
-      let encodedData = encodeUrl(data, usePlus = true)
+      let encodedData = encodeUrl(data, usePlus = true).replace("+", " ")
       text.add("+" & encodedData)
     of Delete:
-      text.add("-" & $data.len)
+      text.add("-" & $data.runeLen)
     of Equal:
-      text.add("=" & $data.len)
-  return text.join("\t")
+      text.add("=" & $data.runeLen)
+  return text.join("\t").unescapeEncode
 
 # CHECKED OK
 proc fromDelta(text1: string, delta: string): seq[StringDiff] =
@@ -1603,16 +1644,17 @@ proc fromDelta(text1: string, delta: string): seq[StringDiff] =
       continue
     # Each token begins with a one character parameter which specifies the
     # operation of this token (delete, insert, equality).
-    let param = token[1 ..^ 1]
+    let param = token.runeSubStr(1)
     case token[0]
     of '+':
-      let decodedParam = decodeUrl(param, decodePlus = true)
+      let decodedParam = decodeUrl(param.replace("+", "%2B"), decodePlus = false)
       diffs.add((Insert, decodedParam))
     of '-', '=':
       let n = parseInt(param)
       if n < 0:
         raise newException(ValueError, "Negative number in fromDelta: " & param)
-      let text = text1[pointer ..< pointer + n]
+      #let text = text1[pointer ..< pointer + n]
+      let text = text1.runeSubStr(pointer, n)
       pointer += n
       if token[0] == '=':
         diffs.add((Equal, text))
@@ -1621,10 +1663,10 @@ proc fromDelta(text1: string, delta: string): seq[StringDiff] =
     else:
       raise
         newException(ValueError, "Invalid diff operation in fromDelta: " & $token[0])
-  if pointer != text1.len:
+  if pointer != text1.runeLen:
     raise newException(
       ValueError,
-      "Delta length (" & $pointer & ") does not equal source text length (" & $text1.len &
+      "Delta length (" & $pointer & ") does not equal source text length (" & $text1.runeLen &
         ").",
     )
   return diffs
