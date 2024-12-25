@@ -7,7 +7,7 @@
 
 import unittest2
 
-include diffmatchpatch
+include ../src/diffmatchpatch
 # {.experimental: "codeReordering".}
 
 suite "Diff basic functions":
@@ -787,9 +787,12 @@ suite "Diff Main - Linemode":
     const
       a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n"
       b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n"
+    #let
+    debugEcho "LINEMODE START"
+    let diffs1 = makeDiffs(a, b, true)
+    debugEcho "TEXTMODE START"
+    let diffs2 = makeDiffs(a, b, false)
     let
-      diffs1 = makeDiffs(a, b, true)
-      diffs2 = makeDiffs(a, b, false)
       textsLinemode = rebuildTexts(diffs1)
       textsTextmode = rebuildTexts(diffs2)
     #echo diffs1

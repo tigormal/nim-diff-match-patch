@@ -1,4 +1,4 @@
-import diffmatchpatch
+import ./diffmatchpatch
 
 proc main() =
   let dmp = newDiffMatchPatch()

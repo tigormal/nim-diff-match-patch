@@ -47,7 +47,7 @@ proc newDiffMatchPatch*(): DMPConfig =
     matchMaxBits: 32,
   )
 
-let defaultParams {.compileTime.} = DMPConfig(
+let defaultParams = DMPConfig(
   diffTimeout: 1.0,
   diffEditCost: 4,
   matchThreshold: 0.5,
@@ -110,54 +110,63 @@ proc linesToChars(
 
 # CHECKED OK
 proc charsToLines(diffs: var seq[StringDiff], lineArray: seq[string]) =
+  var
+    text: string
+    index: int = -1
   for diff in diffs.mitems:
-    var text = ""
+    text = ""
     for r in diff.text.runes:
-      let index = r.int
+      index = r.int
       if index >= 0 and index < lineArray.len:
         text.add(lineArray[index])
     diff.text = text
 
 # CHECKED OK
+# Kotlin imp
 proc commonPrefix(text1, text2: string): int =
   if text1.len == 0 or text2.len == 0 or text1[0] != text2[0]:
-    #echo fmt"cmn pfx: {text1}, {text2}, 0"
+    #debugEcho fmt"cmn pfx: {text1}, {text2}, 0"
     return 0
   let n = min(text1.len, text2.len)
   for i in 0 ..< n:
     if text1[i] != text2[i]:
-      #echo fmt"cmn pfx: {text1}, {text2}, {$i}"
+      #debugEcho fmt"cmn pfx: {text1}, {text2}, {$i}"
       return i
-  #echo fmt"cmn pfx: {text1}, {text2}, {$n}"
+  #debugEcho fmt"cmn pfx: {text1}, {text2}, {$n}"
   return n
 
-  # var pointermin = 0
-  # var pointermax = min(text1.len, text2.len)
-  # var pointermid = pointermax
-  # var pointerstart = 0
-  # while pointermin < pointermid:
-  #   if text1[pointerstart ..< pointermid] == text2[pointerstart ..< pointermid]:
-  #     pointermin = pointermid
-  #     pointerstart = pointermin
-  #   else:
-  #     pointermax = pointermid
-  #   pointermid = (pointermax - pointermin) div 2 + pointermin
-  # pointermid
+# Python imp
+proc commonPrefix2(text1, text2: string): int =
+  var pointermin = 0
+  var pointermax = min(text1.len, text2.len)
+  var pointermid = pointermax
+  var pointerstart = 0
+  while pointermin < pointermid:
+    if text1[pointerstart ..< pointermid] == text2[pointerstart ..< pointermid]:
+      pointermin = pointermid
+      pointerstart = pointermin
+    else:
+      pointermax = pointermid
+    pointermid = (pointermax - pointermin) div 2 + pointermin
+  pointermid
+
+# Kotlin imp
+proc commonSuffix(text1, text2: string): int =
+  let
+   text1Length = text1.len
+   text2Length = text2.len
+   n = min(text1Length, text2Length)
+  # Quick check for common null cases.
+  if text1.len == 0 or text2.len == 0 or text1[^1] != text2[^1]:
+   return 0
+  for i in 1 .. n:
+   if text1[text1Length - i] != text2[text2Length - i]:
+    return i - 1
+  return n
 
 # CHECKED OK
-proc commonSuffix(text1, text2: string): int =
-  #let
-  # text1Length = text1.len
-  #text2Length = text2.len
-  #n = min(text1Length, text2Length)
-  # Quick check for common null cases.
-  #if text1.len == 0 or text2.len == 0 or text1[^1] != text2[^1]:
-  # return 0
-  #for i in 1 .. n:
-  # if text1[text1Length - i] != text2[text2Length - i]:
-  #  return i - 1
-  #return n
-
+# Python imp
+proc commonSuffix2(text1, text2: string): int =
   # Binary search.
   # Performance analysis: https://neil.fraser.name/news/2007/10/09/
   var
@@ -175,7 +184,7 @@ proc commonSuffix(text1, text2: string): int =
       pointermax = pointermid
     pointermid = (pointermax - pointermin) div 2 + pointermin
 
-  #echo fmt"cmn sfx: {text1}, {text2}, {$pointermid}"
+  #debugEcho fmt"cmn sfx: {text1}, {text2}, {$pointermid}"
   return pointermid
 
 # CHECKED OK
@@ -332,13 +341,21 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
     of Insert:
       inc countInsert
       textInsert &= diffs[i].text
-      echo fmt"textInsert: {textInsert}"
       inc i
     of Delete:
       inc countDelete
       textDelete &= diffs[i].text
-      echo fmt"textDelete: {textDelete}"
+      #debugEcho fmt"countDelete: {countDelete}, textDelete: {textDelete}"
+      # DEBUG ==
+      # if countDelete > 1:
+      #   debugEcho "GOTCHA"
+      #   debugEcho fmt"diff: {diffs[i]}"
+      #   debugEcho fmt"countDelete: {countDelete}"
+      #   debugEcho fmt"countInsert: {countInsert}"
+      #   debugEcho fmt"commonLength: {commonLength}"
+      # ========
       inc i
+      #debugEcho "inc i"
     of Equal:
       # Upon reaching an equality, check for prior redundancies.
       if countDelete + countInsert > 1:
@@ -355,38 +372,31 @@ proc cleanupMerge(diffs: var seq[StringDiff]) =
               inc i
             textInsert = textInsert.substr(commonLength)
             textDelete = textDelete.substr(commonLength)
-            echo fmt"textInsert: {textInsert}, textDelete: {textDelete}"
 
           # Factor out any common suffixes.
-          #echo "cleanupMerge factor out suffixes"
           commonLength = commonSuffix(textInsert, textDelete)
           if commonLength != 0:
             diffs[i].text =
               textInsert.substr(textInsert.len - commonLength) & diffs[i].text
             textInsert = textInsert.substr(0, textInsert.len - commonLength - 1)
             textDelete = textDelete.substr(0, textDelete.len - commonLength - 1)
-            #echo fmt"textInsert: {textInsert}, textDelete: {textDelete}"
 
         # Delete the offending records and add the merged ones.
-        #echo "cleanupMerge delete offending"
         var newOps: seq[StringDiff] = @[]
         if textDelete.len != 0:
           newOps.add((Delete, textDelete))
         if textInsert.len != 0:
           newOps.add((Insert, textInsert))
-        #echo newOps
         i -= countDelete + countInsert
         diffs[i ..< i + countDelete + countInsert] = newOps
         i += newOps.len + 1
       elif i != 0 and diffs[i - 1].op == Equal:
         # Merge this equality with the previous one.
-        #echo "cleanupMerge merge equalitiles"
         diffs[i - 1].text &= diffs[i].text
         diffs.delete(i)
       else:
         inc i
 
-      echo "reset vars"
       countInsert = 0
       countDelete = 0
       textDelete = ""
@@ -581,7 +591,7 @@ proc cleanupSemantic(diffs: var seq[StringDiff]) =
   if changes:
     cleanupMerge(diffs)
 
-  cleanupSemanticLossless(diffs)
+  cleanupSemanticLossless(diffs) # CHECKED?
 
   i = 1
   while i < diffs.len:
@@ -614,17 +624,17 @@ proc cleanupSemantic(diffs: var seq[StringDiff]) =
     inc i
 
 # CHECKED OK
+# FIXME WARNING: THIS FUNCTION IS BROKEN SOMEWHERE
 proc lineMode(
     text1, text2: string, deadline: float, params: DMPConfig = defaultParams
 ): seq[StringDiff] =
   # Scan the text on a line-by-line basis first.
-  let (text1, text2, linearray) = linesToChars(text1, text2)
+  let (text1, text2, linearray) = linesToChars(text1, text2) # CHECKED
 
   var diffs = makeDiffs(text1, text2, false, deadline, params)
 
   # Convert the diff back to original text.
   charsToLines(diffs, linearray)
-  echo "charsToLines", diffs, "\n"
   # Eliminate freak matches (e.g. blank lines)
   cleanupSemantic(diffs)
 
@@ -650,11 +660,7 @@ proc lineMode(
         # Delete the offending records and add the merged ones.
         var subDiffs = makeDiffs(textDelete, textInsert, false, deadline, params)
         diffs.delete(i - count_delete - count_insert ..< count_delete + count_insert)
-        i = i - countDelete - countInsert
-        var insIdx = i
-        for diff in subDiffs:
-          diffs.insert(diff, insIdx)
-          inc insIdx
+        diffs.insert(subDiffs, i - count_delete - count_insert)
         i += subDiffs.len
       countInsert = 0
       countDelete = 0
@@ -686,12 +692,12 @@ proc bisect(
   let
     text1Length = text1.len
     text2Length = text2.len
-    max_d = (text1Length + text2Length + 1) div 2
+    max_d: int = (text1Length + text2Length + 1) div 2
     v_offset = max_d
     v_length = 2 * max_d
   var
-    v1 = newSeqWith[int](v_length, -1)
-    v2 = newSeqWith[int](v_length, -1)
+    v1: seq[int] = newSeqWith(v_length, -1)
+    v2: seq[int] = newSeqWith(v_length, -1)
   v1[v_offset + 1] = 0
   v2[v_offset + 1] = 0
   let delta = text1Length - text2Length
@@ -730,7 +736,7 @@ proc bisect(
         # Ran off the bottom of the graph.
         k1start += 2
       elif front:
-        let k2_offset = v_offset + delta - k1
+        let k2_offset = max_d + delta - k1 #v_offset + delta - k1 # SUS
         if k2_offset >= 0 and k2_offset < v_length and v2[k2_offset] != -1:
           # Mirror x2 onto top-left coordinate system.
           let x2 = text1Length - v2[k2_offset]
@@ -759,7 +765,7 @@ proc bisect(
         # Ran off the top of the graph.
         k2start += 2
       elif not front:
-        let k1_offset = v_offset + delta - k2
+        let k1_offset = max_d + delta - k2 #v_offset + delta - k2 # SUS
         if k1_offset >= 0 and k1_offset < v_length and v1[k1_offset] != -1:
           let
             x1 = v1[k1_offset]
@@ -941,7 +947,6 @@ proc makeDiffs*(
     result.insert((Equal, commonPrefix), 0)
   if commonsuffix.len != 0:
     result.add((Equal, commonsuffix))
-  echo "computeDiff", result
   cleanupMerge(result) # kvar
 
 # CHECKED OK
@@ -1542,7 +1547,7 @@ proc `$`*(patches: seq[Patch]): string =
 
 # CHECKED MAYBE OK
 # TODO: replace var patches with result
-proc patchFromText(textline: string): seq[Patch] =
+proc patchFromText*(textline: string): seq[Patch] =
   var patches: seq[Patch] = @[]
   if textline == "":
     return patches
